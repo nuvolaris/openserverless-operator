@@ -1,0 +1,75 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+name: Trigger Testing
+run-name: "Dispatch operator PR test for PR #${{ github.event.issue.number }}"
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  dispatch:
+    if: >
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/test ') &&
+      contains('OWNER,MEMBER,COLLABORATOR', github.event.comment.author_association)
+    name: Dispatch operator-pr-test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Parse requested target
+        id: parse
+        run: |
+          COMMENT_BODY='${{ github.event.comment.body }}'
+          TARGET="$(printf '%s\n' "$COMMENT_BODY" | awk '{print $2}')"
+          case "$TARGET" in
+            kind|k3s|k3sarm|k8s|k8sarm|mk8s|mk8sarm|eks|eksarm|aks|aksarm|gke|gkearm|osh|osharm)
+              echo "enabled=true" >> "$GITHUB_OUTPUT"
+              echo "test_tag=$TARGET" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "enabled=false" >> "$GITHUB_OUTPUT"
+              echo "Unsupported test target requested by comment: $TARGET" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Resolve PR head
+        id: pr
+        if: steps.parse.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_JSON="$(gh api "${{ github.event.issue.pull_request.url }}")"
+          echo "number=$(echo "$PR_JSON" | jq -r '.number')" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$(echo "$PR_JSON" | jq -r '.head.ref')" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(echo "$PR_JSON" | jq -r '.head.sha')" >> "$GITHUB_OUTPUT"
+          echo "head_repo=$(echo "$PR_JSON" | jq -r '.head.repo.full_name')" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch to testing repo
+        if: steps.parse.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.OPENSERVERLESS_TESTING_PAT }}
+        run: |
+          gh api "repos/${{ github.repository_owner }}/openserverless-testing/dispatches" \
+            -X POST \
+            -f event_type=operator-pr-test \
+            -f "client_payload[pr_number]=${{ steps.pr.outputs.number }}" \
+            -f "client_payload[pr_ref]=${{ steps.pr.outputs.head_ref }}" \
+            -f "client_payload[pr_sha]=${{ steps.pr.outputs.head_sha }}" \
+            -f "client_payload[operator_repo]=${{ steps.pr.outputs.head_repo }}" \
+            -f "client_payload[test_tag]=${{ steps.parse.outputs.test_tag }}"

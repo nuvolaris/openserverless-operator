@@ -20,16 +20,10 @@ name: openserverless-operator-check
 on:
   pull_request:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      operator_image:
-        description: "Operator image repository"
-        required: false
-        default: ""
 
 jobs:
   check:
-    name: Check OpenServerless Operator
+    name: License And Workflow Sanity
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -38,30 +32,5 @@ jobs:
           submodules: recursive
       - name: License
         uses: apache/skywalking-eyes@main
-      - name: Resolve build context
-        run: |
-          SHORT_SHA="$(git rev-parse --short HEAD)"
-          if test "${{ github.event_name }}" = "pull_request"
-          then
-            IMG_TAG="pr-${{ github.event.pull_request.number }}-${SHORT_SHA}"
-          else
-            IMG_TAG="manual-${SHORT_SHA}"
-          fi
-          MY_OPERATOR_IMAGE="${{ inputs.operator_image || vars.OPERATOR_IMAGE || 'apache/openserverless-operator' }}"
-          echo "IMG_TAG=${IMG_TAG}" >> "$GITHUB_ENV"
-          echo "OPERATOR_TAG=${IMG_TAG}" >> "$GITHUB_ENV"
-          echo "MY_OPERATOR_IMAGE=${MY_OPERATOR_IMAGE}" >> "$GITHUB_ENV"
-      - name: Kind
-        uses: container-tools/kind-action@v2.0.4
-        with:
-          version: v0.22.0
-          cluster_name: nuvolaris
-          config: .github/kind.yaml
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v4
-        with:
-          python-version: 3.12
-      - name: Setup
-        run: bash .github/cisetup.sh
-      - name: Build and test with Docker/Kind
-        run: bash .github/build-and-test.sh
+      - name: Validate workflow YAML
+        run: ruby -e 'require "yaml"; Dir[".github/workflows/*.yml"].sort.each { |f| YAML.load_file(f); puts "OK #{f}" }'
