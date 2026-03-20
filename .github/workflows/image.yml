@@ -22,6 +22,20 @@ on:
   push:
     tags:
     - '[0-9]*'
+  workflow_dispatch:
+    inputs:
+      operator_tag:
+        description: "Operator tag to build and publish"
+        required: false
+        default: ""
+      operator_image:
+        description: "Operator image repository"
+        required: false
+        default: ""
+      testing_targets:
+        description: "Comma-separated testing targets"
+        required: false
+        default: "kind,k3s"
 jobs:
   image:
     name: Build OpenServerless Operator Image
@@ -32,24 +46,31 @@ jobs:
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"    
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           submodules: recursive
       - name: License
         uses: apache/skywalking-eyes@main
-      - name: Assign TAG from pull request
-        if:  ${{ github.event_name == 'pull_request' }}
+      - name: Resolve release context
         run: |
-          echo "IMG_TAG=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
-      - name: Assign TAG from push
-        if:  ${{ github.event_name != 'pull_request' }}
-        run: |
-          echo "IMG_TAG=$(git describe --tags --abbrev=0)" >> "$GITHUB_ENV"
-      - name: Assign Custom Image Name
-        if:  ${{ github.repository_owner != 'apache'}}
-        run: |
-          echo "MY_OPERATOR_IMAGE=ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}" >> "$GITHUB_ENV"
-          echo "IMAGE_REGISTRY=ghcr.io" >> "$GITHUB_ENV"
+          if test -n "${{ inputs.operator_tag }}"
+          then
+            IMG_TAG="${{ inputs.operator_tag }}"
+          else
+            IMG_TAG="$(git describe --tags --abbrev=0)"
+          fi
+          MY_OPERATOR_IMAGE="${{ inputs.operator_image || vars.OPERATOR_IMAGE || 'apache/openserverless-operator' }}"
+          if [[ "$MY_OPERATOR_IMAGE" == ghcr.io/* ]]
+          then
+            IMAGE_REGISTRY="ghcr.io"
+          else
+            IMAGE_REGISTRY="docker.io"
+          fi
+          echo "IMG_TAG=${IMG_TAG}" >> "$GITHUB_ENV"
+          echo "OPERATOR_TAG=${IMG_TAG}" >> "$GITHUB_ENV"
+          echo "MY_OPERATOR_IMAGE=${MY_OPERATOR_IMAGE}" >> "$GITHUB_ENV"
+          echo "IMAGE_REGISTRY=${IMAGE_REGISTRY}" >> "$GITHUB_ENV"
+          echo "TESTING_TARGETS=${{ inputs.testing_targets || vars.TESTING_TARGETS || 'kind,k3s' }}" >> "$GITHUB_ENV"
       - name: Set up Python 3.12
         uses: actions/setup-python@v4
         with:
@@ -59,34 +80,15 @@ jobs:
       - name: Kind
         uses: container-tools/kind-action@v2.0.4
         with:
-            version: v0.22.0
-            cluster_name: nuvolaris
-            config: .github/kind.yaml        
-      - name: Install
-        run: poetry install
-      - name: BuildAndLoad
-        run: task build-and-load TAG="$IMG_TAG"
-      - name: Ngrok
-        if: ${{ env.NGROK == 'on' }}
-        run: bash .github/debug-github-actions.sh
-        env:
-          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
-          USER_PASS: ${{ secrets.USER_PASS }}
-      - name: Wait
-        if: ${{ env.NGROK == 'on' }}
-        run: bash .github/wait.sh
-      - name: AddIngress
-        run: task kind:ingress         
-      - name: Unit Test
-        run: task utest
-        continue-on-error: false
-      #- name: Integration Test
-      #  run: task itest
-      #  continue-on-error: false        
+          version: v0.22.0
+          cluster_name: nuvolaris
+          config: .github/kind.yaml
+      - name: Build and test with Docker/Kind
+        run: bash .github/build-and-test.sh
       - name: Registry login
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.IMAGE_REGISTRY || 'registry.hub.docker.com' }}
+          registry: ${{ env.IMAGE_REGISTRY }}
           username: ${{ env.IMAGE_REGISTRY == 'ghcr.io' && github.repository_owner || secrets.DOCKERHUB_USER }}
           password: ${{ env.IMAGE_REGISTRY == 'ghcr.io' && secrets.GITHUB_TOKEN || secrets.DOCKERHUB_TOKEN }}
       - name: Set up QEMU
@@ -96,4 +98,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Image
-        run: task buildx-and-push TAG="$IMG_TAG"     
+        run: task buildx-and-push TAG="$IMG_TAG"
+      - name: Trigger openserverless-testing
+        env:
+          GH_TOKEN: ${{ secrets.OPENSERVERLESS_TESTING_PAT }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          TESTING_REPO_OWNER: ${{ github.repository_owner }}
+        run: bash .github/dispatch-testing-tags.sh

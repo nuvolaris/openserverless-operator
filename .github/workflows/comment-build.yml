@@ -15,53 +15,65 @@
 # specific language governing permissions and limitations
 # under the License.
 #
+name: Comment Build OpenServerless Operator
+run-name: "Comment build for PR #${{ github.event.issue.number }}"
 
-name: openserverless-operator-check
 on:
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
-    inputs:
-      operator_image:
-        description: "Operator image repository"
-        required: false
-        default: ""
+  issue_comment:
+    types: [created]
 
 jobs:
-  check:
-    name: Check OpenServerless Operator
+  comment-build:
+    if: >
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/test build') &&
+      contains('OWNER,MEMBER,COLLABORATOR', github.event.comment.author_association)
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout
+      - name: Resolve PR head
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_JSON="$(gh api "${{ github.event.issue.pull_request.url }}")"
+          echo "number=$(echo "$PR_JSON" | jq -r '.number')" >> "$GITHUB_OUTPUT"
+          echo "head_repo=$(echo "$PR_JSON" | jq -r '.head.repo.full_name')" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$(echo "$PR_JSON" | jq -r '.head.ref')" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(echo "$PR_JSON" | jq -r '.head.sha')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR head
         uses: actions/checkout@v4
         with:
+          repository: ${{ steps.pr.outputs.head_repo }}
+          ref: ${{ steps.pr.outputs.head_sha }}
           submodules: recursive
+
       - name: License
         uses: apache/skywalking-eyes@main
+
       - name: Resolve build context
         run: |
           SHORT_SHA="$(git rev-parse --short HEAD)"
-          if test "${{ github.event_name }}" = "pull_request"
-          then
-            IMG_TAG="pr-${{ github.event.pull_request.number }}-${SHORT_SHA}"
-          else
-            IMG_TAG="manual-${SHORT_SHA}"
-          fi
-          MY_OPERATOR_IMAGE="${{ inputs.operator_image || vars.OPERATOR_IMAGE || 'apache/openserverless-operator' }}"
+          IMG_TAG="pr-${{ steps.pr.outputs.number }}-${SHORT_SHA}"
+          MY_OPERATOR_IMAGE="${{ vars.OPERATOR_IMAGE || 'apache/openserverless-operator' }}"
           echo "IMG_TAG=${IMG_TAG}" >> "$GITHUB_ENV"
           echo "OPERATOR_TAG=${IMG_TAG}" >> "$GITHUB_ENV"
           echo "MY_OPERATOR_IMAGE=${MY_OPERATOR_IMAGE}" >> "$GITHUB_ENV"
+
       - name: Kind
         uses: container-tools/kind-action@v2.0.4
         with:
           version: v0.22.0
           cluster_name: nuvolaris
           config: .github/kind.yaml
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v4
         with:
           python-version: 3.12
+
       - name: Setup
         run: bash .github/cisetup.sh
+
       - name: Build and test with Docker/Kind
         run: bash .github/build-and-test.sh
