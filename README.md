@@ -27,6 +27,7 @@ We describe how to build and test the operator in our development environment
 Please refer to the [website](https://openserverless.apache.org) for user information.
 
 For PR-driven infrastructure tests on GitHub, use a PR label in the form `<test>-<commit-hash>`, for example `k3s-abcdef1`.
+The hash can be either a short SHA prefix or the full commit SHA for the PR head.
 
 ## How to build and use an operator image
 
